@@ -6,7 +6,6 @@ __metaclass__ = type
 
 import errno
 import os
-import time
 
 import mock
 import pytest

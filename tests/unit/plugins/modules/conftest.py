@@ -1,8 +1,6 @@
 # Copyright (c) 2017 Ansible Project
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-# pylint: disable=unused-import
-
 import json
 
 import pytest
@@ -10,9 +8,6 @@ import pytest
 from ansible.module_utils._text import to_bytes
 from ansible.module_utils.common._collections_compat import MutableMapping
 from ansible.module_utils.six import string_types
-
-from ..utils.amazon_placebo_fixtures import fixture_placeboify
-from ..utils.amazon_placebo_fixtures import fixture_maybe_sleep
 
 
 @pytest.fixture

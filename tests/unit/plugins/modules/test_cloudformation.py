@@ -73,7 +73,6 @@ class FakeModule:
         raise Exception("EXIT")
 
 
-
 def _create_wrapped_client(placeboify):
     connection = placeboify.client("cloudformation")
     retry_decorator = AWSRetry.jittered_backoff()
