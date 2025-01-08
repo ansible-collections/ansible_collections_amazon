@@ -32,7 +32,7 @@ will fail if resources it depends on don't exist.
 """
 
 
-@pytest.fixture(name="placebo")
+@pytest.fixture(name="placeboify")
 def fixture_placeboify(request, monkeypatch):
     """This fixture puts a recording/replaying harness around `boto3_conn`
 
