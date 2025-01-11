@@ -1,0 +1,142 @@
+---
+name: mergeit-backport
+
+env:
+  # These should be updated as part of the MAJOR release process
+  # These can be a comma seperated list if we're actively maintaining more releases
+  BACKPORT_CURRENT: 'backport-9'
+  BACKPORT_BUGFIX: 'backport-8'
+  BACKPORT_FORBIDDEN: 'do_not_backport'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types:
+      - labeled
+      - opened
+      - synchronize
+    branches:
+      - main
+
+jobs:
+  changelog-types:
+    # We always skip if do_not_backport has previously been applied.
+    # Otherwise, if someone applies 'mergeit', opens the PR, or pushes a new commit
+    # we'll examine the contents of changelog fragments to try to guess the best backport strategy.
+    if: ${{
+        ! contains(github.event.pull_request.labels.*.name, 'do_not_backport')
+        && (
+          (github.event.action == 'labeled' && github.event.label.name == 'mergeit')
+          || (github.event.action == 'synchronize')
+          || (github.event.action == 'opened')
+        )
+      }}
+
+    permissions:
+      pull-requests: read
+    runs-on: ubuntu-latest
+    outputs:
+      no_backport: ${{ steps.fetch.outputs.no_backport }}
+      bugfix: ${{ steps.fetch.outputs.bugfix }}
+      minor_only: ${{ steps.fetch.outputs.minor_only }}
+    steps:
+      - env:
+          EVENT_CONTEXT: ${{ toJson(github.event) }}
+        run: |
+          echo  "${EVENT_CONTEXT}"
+      - uses: actions/checkout@v2
+      - name: Fetch change types from changelog fragments
+        id: fetch
+        shell: bash {0}
+        run: |
+          gh pr -R "${GITHUB_REPOSITORY}" diff "${{ github.event.pull_request.number }}" --name-only | \
+            grep -E '^changelogs/fragments/' | \
+            while read -r line
+              do cat "${line}" | \
+                python -c 'import sys, yaml; change = yaml.safe_load(sys.stdin.read()) ; print("\n".join(change.keys()));' \
+                | tee -a all-changelog-types
+            done
+          # Beware, these are bash-ian booleans: "true == 0"
+          grep -qE '(release_summary|breaking_changes|major_changes|removed_features)' all-changelog-types ; echo "no_backport=${?}" >>${GITHUB_OUTPUT}
+          grep -qE '(deprecated_features|minor_changes)' all-changelog-types ; echo "minor_only=${?}" >>${GITHUB_OUTPUT}
+          grep -qE '(bugfixes|security_fixes)' all-changelog-types ; echo "bugfix=${?}" >>${GITHUB_OUTPUT}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  changelog-labeling:
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-latest
+    needs:
+      - changelog-types
+    steps:
+      - env:
+          NEEDS_CONTEXT: ${{ toJson(needs) }}
+        run: |
+          echo  "${NEEDS_CONTEXT}"
+      - name: Strip tags for backporting
+        id: no-backport
+        # If breaking_changes or major_changes are pushed, then we always apply do_not_backport
+        # and strip any existing backport-* labels
+        if: ${{ needs.changelog-types.outputs.no_backport == '0' }}
+        shell: bash {0}
+        run: |
+          # If this includes breaking changes, then set the do_not_backport label and remove all
+          # labels starting with "backport".
+          CURRENT_LABELS=$(
+            gh pr -R "${GITHUB_REPOSITORY}" view "${{ github.event.pull_request.number }}" \
+              --json labels \
+              --jq '[.labels[] | select(.name | startswith("backport"))] | map(.name) | join(",")'
+          )
+          echo "${BACKPORT_FORBIDDEN} (remove '${CURRENT_LABELS}')"
+          if [[ -n ${CURRENT_LABELS} ]] ; then
+            gh pr -R "${GITHUB_REPOSITORY}" edit "${{ github.event.pull_request.number }}" \
+              --add-label ${BACKPORT_FORBIDDEN} \
+              --remove-label "${CURRENT_LABELS}"
+          else
+            gh pr -R "${GITHUB_REPOSITORY}" edit "${{ github.event.pull_request.number }}" \
+              --add-label ${BACKPORT_FORBIDDEN}
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Apply tag for backporting to at least the most recent major release
+        id: minor-only
+        # To avoid spammy behaviour, only apply backport-X tags when "mergeit" is applied
+        # in general, bugfixes and security fixes would be backported, but anything that might
+        # trigger a minor release is not (new features and deprecations)
+        if: ${{
+          (github.event.action == 'labeled' && github.event.label.name == 'mergeit')
+          && ! ( needs.changelog-types.outputs.no_backport == '0' )
+          && (
+            ( needs.changelog-types.outputs.minor_only == '0' )
+            || ! (needs.changelog-types.outputs.bugfix == '0' )
+          )
+          }}
+        shell: bash {0}
+        run: |
+          # If we include something that needs a "minor" release, we probably should be
+          # automatically backporting it.
+          echo ${BACKPORT_CURRENT}
+          gh pr -R "${GITHUB_REPOSITORY}" edit "${{ github.event.pull_request.number }}" \
+            --add-label ${BACKPORT_CURRENT}
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Apply tag for backporting to at least the two most recent major releases
+        id: security-or-bugfix
+        if: ${{
+          (github.event.action == 'labeled' && github.event.label.name == 'mergeit')
+          && ! ( needs.changelog-types.outputs.no_backport == '0' )
+          && ! ( needs.changelog-types.outputs.minor_only == '0' )
+          && ( needs.changelog-types.outputs.bugfix == '0' )
+          }}
+        shell: bash {0}
+        run: |
+          # If we include a bug/security fix, then we should backport to the bugfix branch
+          echo ${BACKPORT_BUGFIX} ${BACKPORT_CURRENT}
+          gh pr -R "${GITHUB_REPOSITORY}" edit "${{ github.event.pull_request.number }}"
+            --add-label ${BACKPORT_CURRENT},${BACKPORT_BUGFIX}
+        env:
+          GH_TOKEN: ${{ github.token }}
